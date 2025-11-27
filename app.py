@@ -1,32 +1,61 @@
 import streamlit as st
 import pandas as pd
-import os
+import io
 from datetime import datetime
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
 # --------------------------
-# Helper: save CSV results
+# Google Sheets setup
 # --------------------------
-def save_csv(filename, participant_info, responses, questions):
-    os.makedirs("results", exist_ok=True)
-    path = f"results/{filename}_{participant_info['number']}.csv"
+SHEET_NAME = "YOUR_SHEET_NAME"  # Replace with your Google Sheet name
 
+def save_to_google_sheet(responses, questions, participant_info):
+    scope = ["https://spreadsheets.google.com/feeds",
+             "https://www.googleapis.com/auth/drive"]
+    creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
+    client = gspread.authorize(creds)
+    
+    sheet = client.open(SHEET_NAME).sheet1
+    rows = []
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    for i, answer in responses.items():
+        rows.append([
+            timestamp,
+            participant_info["number"],
+            participant_info["name"],
+            i,
+            questions[i - 1] if i - 1 < len(questions) else "",
+            answer
+        ])
+    sheet.append_rows(rows)
+    st.success(f"✅ Réponses sauvegardées dans Google Sheet: {SHEET_NAME}")
+
+def generate_csv(responses, questions, participant_info, filename):
     rows = []
     for i, answer in responses.items():
         rows.append([
             participant_info["number"],
             participant_info["name"],
             i,
-            answer,
-            questions[i - 1]
+            questions[i - 1] if i - 1 < len(questions) else "",
+            answer
         ])
+    df = pd.DataFrame(rows, columns=["ID", "Name", "Q#", "Question", "Answer"])
+    csv_buffer = io.StringIO()
+    df.to_csv(csv_buffer, index=False, sep=";")
+    csv_bytes = csv_buffer.getvalue().encode('utf-8')
 
-    df = pd.DataFrame(rows, columns=["ID", "Name", "Q#", "Answer", "Question"])
-    df.to_csv(path, index=False, sep=";")
-    st.success(f"Saved: {path}")
-
+    st.download_button(
+        label="Télécharger vos réponses CSV",
+        data=csv_bytes,
+        file_name=f"{filename}_{participant_info['number']}.csv",
+        mime="text/csv"
+    )
 
 # --------------------------
-# Short questionnaire data
+# Questionnaire data
 # --------------------------
 instructions_lucid = (
     "Voici 7 questions concernant les rêves lucides.\n"
@@ -53,11 +82,6 @@ lucid_options = [
     ["Très léger", "Léger", "Fort", "Très fort", "Pas de contrôle"]
 ]
 
-lucid_final_message = "Merci pour votre participation !"
-
-# --------------------------
-# Long questionnaire data
-# --------------------------
 additional_questions = [
     "Q0 - A quand remonte le dernier rêve dont tu te souviens ?",
     "Q00 - Était-ce un rêve lucide ou normal ?"
@@ -109,58 +133,55 @@ questions_28 = additional_questions + [
 ]
 
 # --------------------------
-# STREAMLIT UI
+# Streamlit UI
 # --------------------------
-
 st.title("Questionnaire sur les rêves lucides")
 
-# --------------------------
 # Participant info
-# --------------------------
 st.header("Informations du participant")
 participant_number = st.text_input("Numéro du participant")
 participant_name = st.text_input("Nom")
 
 if not participant_number or not participant_name:
-    st.warning("Merci de remplir les informations pour commencer.")
+    st.warning("Veuillez remplir les informations pour continuer.")
     st.stop()
 
 participant_info = {"number": participant_number, "name": participant_name}
 
 st.divider()
 
-# --------------------------
-# SHORT questionnaire
-# --------------------------
+# Short questionnaire
 st.header("Questionnaire court (7 questions)")
 st.write(instructions_lucid)
 
 responses_short = {}
+stop_after_q1 = False
+
 for i, question in enumerate(lucid_questions, 1):
     st.subheader(question)
     options = lucid_options[i - 1]
 
     if options == "text":
-        answer = st.text_input(f"Réponse pour Q{i}", key=f"short_text_{i}")
+        answer = st.text_input(f"Réponse :", key=f"short_text_{i}")
     else:
         answer = st.radio("Choisissez :", options, key=f"short_radio_{i}")
 
     responses_short[i] = answer
 
-    # If Q1 == "Non" → stop
     if i == 1 and answer == "Non":
         st.info("Vous n'avez jamais fait de rêve lucide : passage direct au questionnaire suivant.")
+        stop_after_q1 = True
         break
 
 if st.button("Enregistrer questionnaire court"):
-    save_csv("lucid_frequency", participant_info, responses_short, lucid_questions)
-    st.success("Questionnaire court enregistré !")
+    if stop_after_q1:
+        responses_short = {1: responses_short[1]}
+    save_to_google_sheet(responses_short, lucid_questions, participant_info)
+    generate_csv(responses_short, lucid_questions, participant_info, "lucid_frequency")
 
 st.divider()
 
-# --------------------------
-# LONG questionnaire
-# --------------------------
+# Long questionnaire
 st.header("Questionnaire long (28 questions)")
 
 responses_long = {}
@@ -169,13 +190,12 @@ for i, question in enumerate(questions_28, 1):
     st.subheader(question)
 
     if i <= len(additional_options):
-        options = additional_options[i - 1]
-        answer = st.radio("Choisissez :", options, key=f"long_add_{i}")
+        answer = st.radio("Choisissez :", additional_options[i - 1], key=f"long_add_{i}")
     else:
         answer = st.radio("Choisissez :", options_6, key=f"long_q{i}")
 
     responses_long[i] = answer
 
 if st.button("Enregistrer questionnaire long"):
-    save_csv("luciddreams", participant_info, responses_long, questions_28)
-    st.success("Questionnaire long enregistré !")
+    save_to_google_sheet(responses_long, questions_28, participant_info)
+    generate_csv(responses_long, questions_28, participant_info, "luciddreams")
